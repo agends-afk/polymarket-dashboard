@@ -52,7 +52,7 @@ interface Opportunity {
 }
 
 function fmt(n: number, dec = 2) {
-  return n?.toFixed(dec) ?? '—'
+  return (n ?? 0).toFixed(dec)
 }
 
 function fmtPct(n: number) {
@@ -95,7 +95,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 60000) // refresh every minute
+    const interval = setInterval(fetchData, 60000)
     return () => clearInterval(interval)
   }, [fetchData])
 
@@ -127,9 +127,7 @@ export default function Dashboard() {
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--muted)', marginBottom: 4 }}>
             AGENDS CAPITAL
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>
-            Polymarket Bot
-          </div>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>Polymarket Bot</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -137,29 +135,27 @@ export default function Dashboard() {
             <span className={`tag ${isLive ? 'live' : 'dry'}`}>{isLive ? 'LIVE' : 'DRY RUN'}</span>
           </div>
           <div className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>
-            {timeAgo(lastRefresh.toISOString())}
+            refreshed {timeAgo(lastRefresh.toISOString())}
           </div>
         </div>
       </div>
 
-      {/* Top stats row */}
+      {/* Top stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
 
-        {/* Bankroll */}
         <div className="card animate-slide-in">
           <div className="card-header">USDC Balance</div>
-          <div className={`big-number ${latest?.pnl_usdc >= 0 ? 'positive' : 'negative'}`}>
+          <div className={`big-number ${(latest?.pnl_usdc ?? 0) >= 0 ? 'positive' : 'negative'}`}>
             ${fmt(latest?.bankroll_usdc ?? 500)}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-            <span className={latest?.pnl_usdc >= 0 ? 'positive' : 'negative'}>
+            <span style={{ color: (latest?.pnl_usdc ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
               {fmtPct(latest?.roi_pct ?? 0)}
             </span>
-            {' '}· {latest?.pnl_usdc >= 0 ? '+' : ''}${fmt(latest?.pnl_usdc ?? 0)} P&L
+            {' '}· {(latest?.pnl_usdc ?? 0) >= 0 ? '+' : ''}${fmt(latest?.pnl_usdc ?? 0)} P&L
           </div>
         </div>
 
-        {/* Win rate */}
         <div className="card animate-slide-in" style={{ animationDelay: '0.05s' }}>
           <div className="card-header">Win Rate</div>
           <div className={`big-number ${winRate !== null && winRate >= 50 ? 'positive' : winRate !== null ? 'negative' : 'neutral'}`}>
@@ -170,7 +166,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Open positions */}
         <div className="card animate-slide-in" style={{ animationDelay: '0.10s' }}>
           <div className="card-header">Open Positions</div>
           <div className="big-number neutral">{positions.length}</div>
@@ -179,12 +174,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Cost */}
         <div className="card animate-slide-in" style={{ animationDelay: '0.15s' }}>
           <div className="card-header">Total Cost</div>
-          <div className="big-number" style={{ color: 'var(--accent3)' }}>
-            ${fmt(totalCost)}
-          </div>
+          <div className="big-number" style={{ color: 'var(--accent3)' }}>${fmt(totalCost)}</div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             ~${fmt((latest?.cost_per_cycle_usd ?? 0.13) * 3 * 30)} /mo projected
           </div>
@@ -194,7 +186,6 @@ export default function Dashboard() {
       {/* Second row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
 
-        {/* Last cycle */}
         <div className="card animate-slide-in" style={{ animationDelay: '0.20s' }}>
           <div className="card-header">Last Cycle</div>
           {latest ? (
@@ -206,15 +197,15 @@ export default function Dashboard() {
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
-                {[
+                {([
                   ['Scanned', latest.markets_scanned],
                   ['Evaluated', latest.markets_evaluated],
                   ['Opportunities', latest.opportunities_found],
                   ['Bets placed', latest.bets_placed],
                   ['Cycle cost', `$${fmt(latest.cost_per_cycle_usd, 3)}`],
                   ['Mode', latest.dry_run ? 'Dry' : 'Live'],
-                ].map(([label, value]) => (
-                  <div key={label as string} style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                ] as [string, string | number][]).map(([label, value]) => (
+                  <div key={label} style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
                     <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: 4 }}>
                       {label}
                     </div>
@@ -228,10 +219,9 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Latest opportunities */}
         <div className="card animate-slide-in" style={{ animationDelay: '0.25s' }}>
           <div className="card-header">Latest Opportunities</div>
-          {latest?.top_opportunities?.length > 0 ? (
+          {(latest?.top_opportunities?.length ?? 0) > 0 ? (
             <div className="scroll-area" style={{ maxHeight: 220 }}>
               {latest.top_opportunities.map((opp, i) => (
                 <div key={i} style={{
@@ -248,7 +238,7 @@ export default function Dashboard() {
                   <div className="mono" style={{ fontSize: 10, color: 'var(--muted)', display: 'flex', gap: 12 }}>
                     <span>@ {fmt(opp.market_price * 100, 1)}¢</span>
                     <span>prob {fmt(opp.our_prob * 100, 1)}%</span>
-                    <span className="positive">edge {fmt(opp.edge * 100, 1)}%</span>
+                    <span style={{ color: 'var(--accent)' }}>edge {fmt(opp.edge * 100, 1)}%</span>
                     <span>bet ${fmt(opp.bet_size)}</span>
                   </div>
                 </div>
@@ -292,19 +282,19 @@ export default function Dashboard() {
                     <td style={{ padding: '12px 12px 12px 0' }}>
                       <span className={`tag ${pos.direction.toLowerCase()}`}>{pos.direction}</span>
                     </td>
-                    <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
                       {fmt(pos.entry_price * 100, 1)}¢
                     </td>
-                    <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
                       {fmt(pos.current_price * 100, 1)}¢
                     </td>
-                    <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12, color: 'var(--accent2)' }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: 'var(--accent2)' }}>
                       {fmt(pos.our_probability * 100, 1)}%
                     </td>
-                    <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
                       ${fmt(pos.bet_size_usdc)}
                     </td>
-                    <td className={pos.unrealised_pnl >= 0 ? 'positive mono' : 'negative mono'} style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: pos.unrealised_pnl >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
                       {pos.unrealised_pnl >= 0 ? '+' : ''}${fmt(pos.unrealised_pnl)}
                     </td>
                     <td style={{ padding: '12px 0 12px 0', fontSize: 11, color: 'var(--muted)' }}>
@@ -339,23 +329,21 @@ export default function Dashboard() {
             <tbody>
               {cycles.map((c) => (
                 <tr key={c.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
                     {timeAgo(c.created_at)}
                   </td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}>{c.markets_scanned}</td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}>{c.opportunities_found}</td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}>{c.bets_placed}</td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}>${fmt(c.bankroll_usdc)}</td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}
-                      className={c.pnl_usdc >= 0 ? 'positive mono' : 'negative mono'}>
-                    {c.pnl_usdc >= 0 ? '+' : ''}${fmt(c.pnl_usdc)}
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>{c.markets_scanned}</td>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>{c.opportunities_found}</td>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>{c.bets_placed}</td>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>${fmt(c.bankroll_usdc)}</td>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: (c.pnl_usdc ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
+                    {(c.pnl_usdc ?? 0) >= 0 ? '+' : ''}${fmt(c.pnl_usdc ?? 0)}
                   </td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12 }}
-                      className={c.roi_pct >= 0 ? 'positive mono' : 'negative mono'}>
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: (c.roi_pct ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
                     {fmtPct(c.roi_pct ?? 0)}
                   </td>
-                  <td className="mono" style={{ padding: '10px 12px 10px 0', fontSize: 12, color: 'var(--accent3)' }}>
-                    ${fmt(c.cost_per_cycle_usd, 3)}
+                  <td style={{ padding: '10px 12px 10px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: 'var(--accent3)' }}>
+                    ${fmt(c.cost_per_cycle_usd ?? 0, 3)}
                   </td>
                   <td style={{ padding: '10px 0 10px 0' }}>
                     <span className={`tag ${c.dry_run ? 'dry' : 'live'}`}>{c.dry_run ? 'DRY' : 'LIVE'}</span>
@@ -367,7 +355,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Footer */}
       <div style={{ marginTop: 24, textAlign: 'center', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em' }}>
         AGENDS CAPITAL · AUTO-REFRESHES EVERY 60s · MAX LOSS $500
       </div>
