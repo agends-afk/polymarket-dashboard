@@ -304,8 +304,7 @@ export default function Dashboard() {
                     <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
                       ${fmt(pos.bet_size_usdc)}
                     </td>
-                    <td className="mono" style={{ padding: '12px 12px 12px 0', fontSize: 12 }}
-                        className={pos.unrealised_pnl >= 0 ? 'positive mono' : 'negative mono'}>
+                    <td className={pos.unrealised_pnl >= 0 ? 'positive mono' : 'negative mono'} style={{ padding: '12px 12px 12px 0', fontSize: 12 }}>
                       {pos.unrealised_pnl >= 0 ? '+' : ''}${fmt(pos.unrealised_pnl)}
                     </td>
                     <td style={{ padding: '12px 0 12px 0', fontSize: 11, color: 'var(--muted)' }}>
