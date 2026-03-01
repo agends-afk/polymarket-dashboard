@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 
+const WALLET = '0xee54054e091913A542e7104d59EccEFBf982DDCF'
+
 interface Cycle {
   id: number
   created_at: string
@@ -22,23 +24,6 @@ interface Cycle {
   top_opportunities: Opportunity[]
 }
 
-interface Position {
-  id: number
-  created_at: string
-  market_id: string
-  question: string
-  category: string
-  url: string
-  direction: string
-  entry_price: number
-  current_price: number
-  our_probability: number
-  bet_size_usdc: number
-  unrealised_pnl: number
-  status: string
-  score: number
-}
-
 interface Opportunity {
   question: string
   category: string
@@ -48,6 +33,32 @@ interface Opportunity {
   edge: number
   bet_size: number
   score: number
+  url: string
+}
+
+interface LivePosition {
+  conditionId: string
+  title: string
+  outcome: string
+  currentValue: number
+  initialValue: number
+  pnl: number
+  pnlPct: number
+  size: number
+  currentPrice: number
+  endDate: string
+  url: string
+}
+
+interface OpenOrder {
+  id: string
+  question: string
+  direction: string
+  price: number
+  size: number
+  filledSize: number
+  remainingSize: number
+  expiration: number | null
   url: string
 }
 
@@ -76,26 +87,117 @@ function nextCycleIn(iso: string, intervalMin = 480) {
   return `${h}h ${m}m`
 }
 
+function expiresIn(ts: number) {
+  const diff = Math.max(0, ts - Date.now() / 1000)
+  const m = Math.floor(diff / 60)
+  const s = Math.floor(diff % 60)
+  if (diff <= 0) return 'Expired'
+  if (m < 60) return `${m}m ${s}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+async function fetchLivePositions(): Promise<LivePosition[]> {
+  try {
+    const res = await fetch(`https://data-api.polymarket.com/positions?user=${WALLET}&sizeThreshold=0`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data || []).map((p: any) => {
+      const size = parseFloat(p.size || 0)
+      const currentPrice = parseFloat(p.curPrice || p.currentPrice || 0)
+      const avgPrice = parseFloat(p.avgPrice || p.initialValue || 0)
+      const currentValue = size * currentPrice
+      const initialValue = size * avgPrice
+      const pnl = currentValue - initialValue
+      const pnlPct = initialValue > 0 ? (pnl / initialValue) * 100 : 0
+      return {
+        conditionId: p.conditionId || '',
+        title: p.title || p.market || '',
+        outcome: p.outcome || '',
+        currentValue,
+        initialValue,
+        pnl,
+        pnlPct,
+        size,
+        currentPrice,
+        endDate: p.endDate || '',
+        url: p.slug ? `https://polymarket.com/event/${p.slug}` : '',
+      }
+    }).filter((p: LivePosition) => p.size > 0)
+  } catch {
+    return []
+  }
+}
+
+async function fetchOpenOrders(): Promise<OpenOrder[]> {
+  try {
+    const res = await fetch(`https://clob.polymarket.com/orders?maker_address=${WALLET}&status=LIVE`)
+    if (!res.ok) return []
+    const data = await res.json()
+    const orders = data?.data || data || []
+    return orders.map((o: any) => ({
+      id: o.id || '',
+      question: o.market || o.asset_id || '',
+      direction: o.side === 'BUY' ? 'YES' : 'NO',
+      price: parseFloat(o.price || 0),
+      size: parseFloat(o.original_size || o.size || 0),
+      filledSize: parseFloat(o.size_matched || 0),
+      remainingSize: parseFloat(o.size_open || o.size || 0),
+      expiration: o.expiration ? parseInt(o.expiration) : null,
+      url: '',
+    }))
+  } catch {
+    return []
+  }
+}
+
+async function fetchUSDCBalance(): Promise<number> {
+  try {
+    const res = await fetch(`https://data-api.polymarket.com/value?user=${WALLET}`)
+    if (!res.ok) return 0
+    const data = await res.json()
+    // Returns total portfolio value including USDC and positions
+    return parseFloat(data?.portfolioValue ?? data?.balance ?? 0)
+  } catch {
+    return 0
+  }
+}
+
 export default function Dashboard() {
   const [cycles, setCycles] = useState<Cycle[]>([])
-  const [positions, setPositions] = useState<Position[]>([])
+  const [livePositions, setLivePositions] = useState<LivePosition[]>([])
+  const [openOrders, setOpenOrders] = useState<OpenOrder[]>([])
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
 
-  const fetchData = useCallback(async () => {
-    const [{ data: cyclesData }, { data: positionsData }] = await Promise.all([
+  const fetchData = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true)
+
+    const [
+      { data: cyclesData },
+      positions,
+      orders,
+      balance,
+    ] = await Promise.all([
       supabase.from('cycles').select('*').order('created_at', { ascending: false }).limit(50),
-      supabase.from('positions').select('*').order('created_at', { ascending: false }),
+      fetchLivePositions(),
+      fetchOpenOrders(),
+      fetchUSDCBalance(),
     ])
+
     if (cyclesData) setCycles(cyclesData)
-    if (positionsData) setPositions(positionsData)
+    setLivePositions(positions)
+    setOpenOrders(orders)
+    if (balance > 0) setUsdcBalance(balance)
     setLastRefresh(new Date())
     setLoading(false)
+    if (isManual) setRefreshing(false)
   }, [])
 
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 60000)
+    const interval = setInterval(() => fetchData(), 60000)
     return () => clearInterval(interval)
   }, [fetchData])
 
@@ -107,46 +209,65 @@ export default function Dashboard() {
     ? (latest.wins / (latest.wins + latest.losses) * 100)
     : null
 
+  const totalImpliedPnL = livePositions.reduce((s, p) => s + p.pnl, 0)
+  const totalPositionValue = livePositions.reduce((s, p) => s + p.currentValue, 0)
+  const totalInvested = livePositions.reduce((s, p) => s + p.initialValue, 0)
+  const displayBalance = usdcBalance ?? latest?.bankroll_usdc ?? 0
+
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
         <div style={{ textAlign: 'center' }}>
           <div className="live-dot" style={{ margin: '0 auto 12px' }} />
-          <div className="mono" style={{ fontSize: 12, color: 'var(--muted)' }}>LOADING</div>
+          <div className="mono" style={{ fontSize: 12, color: 'var(--muted)', letterSpacing: '0.15em' }}>LOADING</div>
         </div>
       </div>
     )
   }
 
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '24px 20px' }}>
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '28px 24px' }}>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 32 }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.2em', color: 'var(--muted)', marginBottom: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.25em', color: 'var(--muted)', marginBottom: 4 }}>
             AGENDS CAPITAL
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>Polymarket Bot</div>
+          <div style={{ fontSize: 24, fontWeight: 800 }}>Polymarket Bot</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            onClick={() => fetchData(true)}
+            disabled={refreshing}
+            style={{
+              background: 'var(--card)', border: '1px solid var(--border)',
+              color: 'var(--text)', borderRadius: 8, padding: '7px 14px',
+              fontSize: 11, fontWeight: 600, letterSpacing: '0.05em',
+              cursor: refreshing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+              opacity: refreshing ? 0.6 : 1, transition: 'opacity 0.2s',
+            }}
+          >
+            <span style={{ fontSize: 13 }}>{refreshing ? '⟳' : '↺'}</span>
+            {refreshing ? 'REFRESHING...' : 'REFRESH'}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div className="live-dot" />
             <span className={`tag ${isLive ? 'live' : 'dry'}`}>{isLive ? 'LIVE' : 'DRY RUN'}</span>
           </div>
           <div className="mono" style={{ fontSize: 10, color: 'var(--muted)' }}>
-            refreshed {timeAgo(lastRefresh.toISOString())}
+            {timeAgo(lastRefresh.toISOString())}
           </div>
         </div>
       </div>
 
-      {/* Top stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+      {/* Top stats row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 12 }}>
 
         <div className="card animate-slide-in">
           <div className="card-header">USDC Balance</div>
           <div className={`big-number ${(latest?.pnl_usdc ?? 0) >= 0 ? 'positive' : 'negative'}`}>
-            ${fmt(latest?.bankroll_usdc ?? 500)}
+            ${fmt(displayBalance)}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             <span style={{ color: (latest?.pnl_usdc ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
@@ -157,6 +278,16 @@ export default function Dashboard() {
         </div>
 
         <div className="card animate-slide-in" style={{ animationDelay: '0.05s' }}>
+          <div className="card-header">Implied P&L</div>
+          <div className={`big-number ${totalImpliedPnL >= 0 ? 'positive' : 'negative'}`}>
+            {totalImpliedPnL >= 0 ? '+' : ''}${fmt(totalImpliedPnL)}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+            ${fmt(totalPositionValue)} value · ${fmt(totalInvested)} in
+          </div>
+        </div>
+
+        <div className="card animate-slide-in" style={{ animationDelay: '0.10s' }}>
           <div className="card-header">Win Rate</div>
           <div className={`big-number ${winRate !== null && winRate >= 50 ? 'positive' : winRate !== null ? 'negative' : 'neutral'}`}>
             {winRate !== null ? `${fmt(winRate, 0)}%` : '—'}
@@ -166,27 +297,30 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="card animate-slide-in" style={{ animationDelay: '0.10s' }}>
-          <div className="card-header">Open Positions</div>
-          <div className="big-number neutral">{positions.length}</div>
+        <div className="card animate-slide-in" style={{ animationDelay: '0.15s' }}>
+          <div className="card-header">Positions / Orders</div>
+          <div className="big-number neutral">
+            {livePositions.length} <span style={{ fontSize: 16, color: 'var(--muted)' }}>/ {openOrders.length}</span>
+          </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             {totalBets} total bets placed
           </div>
         </div>
 
-        <div className="card animate-slide-in" style={{ animationDelay: '0.15s' }}>
+        <div className="card animate-slide-in" style={{ animationDelay: '0.20s' }}>
           <div className="card-header">Total Cost</div>
           <div className="big-number" style={{ color: 'var(--accent3)' }}>${fmt(totalCost)}</div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             ~${fmt((latest?.cost_per_cycle_usd ?? 0.13) * 3 * 30)} /mo projected
           </div>
         </div>
+
       </div>
 
-      {/* Second row */}
+      {/* Second row: Last Cycle + Latest Opportunities */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
 
-        <div className="card animate-slide-in" style={{ animationDelay: '0.20s' }}>
+        <div className="card animate-slide-in" style={{ animationDelay: '0.25s' }}>
           <div className="card-header">Last Cycle</div>
           {latest ? (
             <>
@@ -207,7 +341,7 @@ export default function Dashboard() {
                 ] as [string, string | number][]).map(([label, value]) => (
                   <div key={label} style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
                     <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: 4 }}>
-                      {label}
+                      {label.toUpperCase()}
                     </div>
                     <div className="mono" style={{ fontSize: 14 }}>{value}</div>
                   </div>
@@ -219,7 +353,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="card animate-slide-in" style={{ animationDelay: '0.25s' }}>
+        <div className="card animate-slide-in" style={{ animationDelay: '0.30s' }}>
           <div className="card-header">Latest Opportunities</div>
           {(latest?.top_opportunities?.length ?? 0) > 0 ? (
             <div className="scroll-area" style={{ maxHeight: 220 }}>
@@ -248,17 +382,21 @@ export default function Dashboard() {
             <div style={{ color: 'var(--muted)', fontSize: 13 }}>No opportunities in last cycle</div>
           )}
         </div>
+
       </div>
 
-      {/* Open positions */}
-      <div className="card animate-slide-in" style={{ animationDelay: '0.30s', marginBottom: 12 }}>
-        <div className="card-header">Open Positions ({positions.length})</div>
-        {positions.length > 0 ? (
+      {/* Live Positions */}
+      <div className="card animate-slide-in" style={{ animationDelay: '0.35s', marginBottom: 12 }}>
+        <div className="card-header">
+          Live Positions ({livePositions.length})
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· from Polymarket API</span>
+        </div>
+        {livePositions.length > 0 ? (
           <div className="scroll-area">
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Market', 'Dir', 'Entry', 'Current', 'Prob', 'Size', 'P&L', 'Status'].map(h => (
+                  {['Market', 'Outcome', 'Shares', 'Price', 'Value', 'Cost', 'P&L', 'P&L %', 'Expires'].map(h => (
                     <th key={h} style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                       color: 'var(--muted)', textAlign: 'left',
@@ -268,37 +406,39 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {positions.map((pos) => (
-                  <tr key={pos.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '12px 12px 12px 0', maxWidth: 280 }}>
+                {livePositions.map((pos, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: '12px 12px 12px 0', maxWidth: 260 }}>
                       <a href={pos.url} target="_blank" rel="noopener noreferrer"
                          style={{ fontSize: 12, color: 'var(--text)', textDecoration: 'none', lineHeight: 1.4 }}>
-                        {pos.question}
+                        {pos.title || pos.conditionId.slice(0, 20) + '...'}
                       </a>
-                      <div style={{ marginTop: 2 }}>
-                        <span className="tag">{pos.category}</span>
-                      </div>
                     </td>
                     <td style={{ padding: '12px 12px 12px 0' }}>
-                      <span className={`tag ${pos.direction.toLowerCase()}`}>{pos.direction}</span>
+                      <span className={`tag ${pos.outcome.toLowerCase() === 'yes' ? 'yes' : 'no'}`}>
+                        {pos.outcome}
+                      </span>
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      {fmt(pos.entry_price * 100, 1)}¢
+                      {fmt(pos.size, 1)}
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      {fmt(pos.current_price * 100, 1)}¢
-                    </td>
-                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: 'var(--accent2)' }}>
-                      {fmt(pos.our_probability * 100, 1)}%
+                      {fmt(pos.currentPrice * 100, 1)}¢
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      ${fmt(pos.bet_size_usdc)}
+                      ${fmt(pos.currentValue)}
                     </td>
-                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: pos.unrealised_pnl >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
-                      {pos.unrealised_pnl >= 0 ? '+' : ''}${fmt(pos.unrealised_pnl)}
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      ${fmt(pos.initialValue)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: pos.pnl >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
+                      {pos.pnl >= 0 ? '+' : ''}${fmt(pos.pnl)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: pos.pnlPct >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
+                      {fmtPct(pos.pnlPct)}
                     </td>
                     <td style={{ padding: '12px 0 12px 0', fontSize: 11, color: 'var(--muted)' }}>
-                      {pos.status}
+                      {pos.endDate ? new Date(pos.endDate).toLocaleDateString() : '—'}
                     </td>
                   </tr>
                 ))}
@@ -306,12 +446,66 @@ export default function Dashboard() {
             </table>
           </div>
         ) : (
-          <div style={{ color: 'var(--muted)', fontSize: 13 }}>No open positions</div>
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>No live positions found</div>
+        )}
+      </div>
+
+      {/* Open Orders */}
+      <div className="card animate-slide-in" style={{ animationDelay: '0.40s', marginBottom: 12 }}>
+        <div className="card-header">
+          Unfilled Orders ({openOrders.length})
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· pending on CLOB</span>
+        </div>
+        {openOrders.length > 0 ? (
+          <div className="scroll-area">
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Order ID', 'Dir', 'Price', 'Size', 'Filled', 'Remaining', 'Expires'].map(h => (
+                    <th key={h} style={{
+                      fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
+                      color: 'var(--muted)', textAlign: 'left',
+                      padding: '0 12px 10px 0', textTransform: 'uppercase'
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {openOrders.map((order) => (
+                  <tr key={order.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--muted)' }}>
+                      {order.id.slice(0, 18)}...
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0' }}>
+                      <span className={`tag ${order.direction.toLowerCase()}`}>{order.direction}</span>
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      {fmt(order.price * 100, 1)}¢
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      ${fmt(order.size)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: 'var(--accent)' }}>
+                      ${fmt(order.filledSize)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      ${fmt(order.remainingSize)}
+                    </td>
+                    <td style={{ padding: '12px 0 12px 0', fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--muted)' }}>
+                      {order.expiration ? expiresIn(order.expiration) : 'GTC'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>No unfilled orders</div>
         )}
       </div>
 
       {/* Cycle history */}
-      <div className="card animate-slide-in" style={{ animationDelay: '0.35s' }}>
+      <div className="card animate-slide-in" style={{ animationDelay: '0.45s' }}>
         <div className="card-header">Cycle History ({cycles.length})</div>
         <div className="scroll-area">
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -356,7 +550,7 @@ export default function Dashboard() {
       </div>
 
       <div style={{ marginTop: 24, textAlign: 'center', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em' }}>
-        AGENDS CAPITAL · AUTO-REFRESHES EVERY 60s · MAX LOSS $500
+        AGENDS CAPITAL · LIVE DATA FROM POLYMARKET API · AUTO-REFRESHES EVERY 60s
       </div>
 
     </div>
