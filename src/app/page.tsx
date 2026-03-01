@@ -52,14 +52,15 @@ interface LivePosition {
 
 interface OpenOrder {
   id: string
-  question: string
+  market_id: string
   direction: string
   price: number
-  size: number
-  filledSize: number
-  remainingSize: number
+  original_size: number
+  size_matched: number
+  size_remaining: number
   expiration: number | null
-  url: string
+  order_type: string
+  status: string
 }
 
 function fmt(n: number, dec = 2) {
@@ -89,10 +90,9 @@ function nextCycleIn(iso: string, intervalMin = 480) {
 
 function expiresIn(ts: number) {
   const diff = Math.max(0, ts - Date.now() / 1000)
-  const m = Math.floor(diff / 60)
-  const s = Math.floor(diff % 60)
   if (diff <= 0) return 'Expired'
-  if (m < 60) return `${m}m ${s}s`
+  const m = Math.floor(diff / 60)
+  if (m < 60) return `${m}m`
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
@@ -104,14 +104,14 @@ async function fetchLivePositions(): Promise<LivePosition[]> {
     return (data || []).map((p: any) => {
       const size = parseFloat(p.size || 0)
       const currentPrice = parseFloat(p.curPrice || p.currentPrice || 0)
-      const avgPrice = parseFloat(p.avgPrice || p.initialValue || 0)
+      const avgPrice = parseFloat(p.avgPrice || 0)
       const currentValue = size * currentPrice
       const initialValue = size * avgPrice
       const pnl = currentValue - initialValue
       const pnlPct = initialValue > 0 ? (pnl / initialValue) * 100 : 0
       return {
         conditionId: p.conditionId || '',
-        title: p.title || p.market || '',
+        title: p.title || '',
         outcome: p.outcome || '',
         currentValue,
         initialValue,
@@ -128,45 +128,10 @@ async function fetchLivePositions(): Promise<LivePosition[]> {
   }
 }
 
-async function fetchOpenOrders(): Promise<OpenOrder[]> {
-  try {
-    const res = await fetch(`https://clob.polymarket.com/orders?maker_address=${WALLET}&status=LIVE`)
-    if (!res.ok) return []
-    const data = await res.json()
-    const orders = data?.data || data || []
-    return orders.map((o: any) => ({
-      id: o.id || '',
-      question: o.market || o.asset_id || '',
-      direction: o.side === 'BUY' ? 'YES' : 'NO',
-      price: parseFloat(o.price || 0),
-      size: parseFloat(o.original_size || o.size || 0),
-      filledSize: parseFloat(o.size_matched || 0),
-      remainingSize: parseFloat(o.size_open || o.size || 0),
-      expiration: o.expiration ? parseInt(o.expiration) : null,
-      url: '',
-    }))
-  } catch {
-    return []
-  }
-}
-
-async function fetchUSDCBalance(): Promise<number> {
-  try {
-    const res = await fetch(`https://data-api.polymarket.com/value?user=${WALLET}`)
-    if (!res.ok) return 0
-    const data = await res.json()
-    // Returns total portfolio value including USDC and positions
-    return parseFloat(data?.portfolioValue ?? data?.balance ?? 0)
-  } catch {
-    return 0
-  }
-}
-
 export default function Dashboard() {
   const [cycles, setCycles] = useState<Cycle[]>([])
   const [livePositions, setLivePositions] = useState<LivePosition[]>([])
   const [openOrders, setOpenOrders] = useState<OpenOrder[]>([])
-  const [usdcBalance, setUsdcBalance] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
@@ -176,20 +141,17 @@ export default function Dashboard() {
 
     const [
       { data: cyclesData },
+      { data: ordersData },
       positions,
-      orders,
-      balance,
     ] = await Promise.all([
       supabase.from('cycles').select('*').order('created_at', { ascending: false }).limit(50),
+      supabase.from('orders').select('*').order('expiration', { ascending: true }),
       fetchLivePositions(),
-      fetchOpenOrders(),
-      fetchUSDCBalance(),
     ])
 
     if (cyclesData) setCycles(cyclesData)
+    if (ordersData) setOpenOrders(ordersData)
     setLivePositions(positions)
-    setOpenOrders(orders)
-    if (balance > 0) setUsdcBalance(balance)
     setLastRefresh(new Date())
     setLoading(false)
     if (isManual) setRefreshing(false)
@@ -212,7 +174,7 @@ export default function Dashboard() {
   const totalImpliedPnL = livePositions.reduce((s, p) => s + p.pnl, 0)
   const totalPositionValue = livePositions.reduce((s, p) => s + p.currentValue, 0)
   const totalInvested = livePositions.reduce((s, p) => s + p.initialValue, 0)
-  const displayBalance = usdcBalance ?? latest?.bankroll_usdc ?? 0
+  const usdcBalance = latest?.bankroll_usdc ?? 0
 
   if (loading) {
     return (
@@ -261,13 +223,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Top stats row */}
+      {/* Top stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 12 }}>
 
         <div className="card animate-slide-in">
           <div className="card-header">USDC Balance</div>
           <div className={`big-number ${(latest?.pnl_usdc ?? 0) >= 0 ? 'positive' : 'negative'}`}>
-            ${fmt(displayBalance)}
+            ${fmt(usdcBalance)}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             <span style={{ color: (latest?.pnl_usdc ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
@@ -283,7 +245,7 @@ export default function Dashboard() {
             {totalImpliedPnL >= 0 ? '+' : ''}${fmt(totalImpliedPnL)}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-            ${fmt(totalPositionValue)} value · ${fmt(totalInvested)} in
+            ${fmt(totalPositionValue)} value · ${fmt(totalInvested)} cost
           </div>
         </div>
 
@@ -317,7 +279,7 @@ export default function Dashboard() {
 
       </div>
 
-      {/* Second row: Last Cycle + Latest Opportunities */}
+      {/* Last Cycle + Latest Opportunities */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
 
         <div className="card animate-slide-in" style={{ animationDelay: '0.25s' }}>
@@ -335,13 +297,13 @@ export default function Dashboard() {
                   ['Scanned', latest.markets_scanned],
                   ['Evaluated', latest.markets_evaluated],
                   ['Opportunities', latest.opportunities_found],
-                  ['Bets placed', latest.bets_placed],
-                  ['Cycle cost', `$${fmt(latest.cost_per_cycle_usd, 3)}`],
+                  ['Bets Placed', latest.bets_placed],
+                  ['Cycle Cost', `$${fmt(latest.cost_per_cycle_usd, 3)}`],
                   ['Mode', latest.dry_run ? 'Dry' : 'Live'],
                 ] as [string, string | number][]).map(([label, value]) => (
                   <div key={label} style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
                     <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--muted)', marginBottom: 4 }}>
-                      {label.toUpperCase()}
+                      {String(label).toUpperCase()}
                     </div>
                     <div className="mono" style={{ fontSize: 14 }}>{value}</div>
                   </div>
@@ -389,14 +351,14 @@ export default function Dashboard() {
       <div className="card animate-slide-in" style={{ animationDelay: '0.35s', marginBottom: 12 }}>
         <div className="card-header">
           Live Positions ({livePositions.length})
-          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· from Polymarket API</span>
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· live from Polymarket API</span>
         </div>
         {livePositions.length > 0 ? (
           <div className="scroll-area">
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Market', 'Outcome', 'Shares', 'Price', 'Value', 'Cost', 'P&L', 'P&L %', 'Expires'].map(h => (
+                  {['Market', 'Outcome', 'Shares', 'Price', 'Value', 'Cost', 'P&L', 'P&L %', 'End Date'].map(h => (
                     <th key={h} style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                       color: 'var(--muted)', textAlign: 'left',
@@ -411,7 +373,7 @@ export default function Dashboard() {
                     <td style={{ padding: '12px 12px 12px 0', maxWidth: 260 }}>
                       <a href={pos.url} target="_blank" rel="noopener noreferrer"
                          style={{ fontSize: 12, color: 'var(--text)', textDecoration: 'none', lineHeight: 1.4 }}>
-                        {pos.title || pos.conditionId.slice(0, 20) + '...'}
+                        {pos.title || pos.conditionId.slice(0, 24) + '...'}
                       </a>
                     </td>
                     <td style={{ padding: '12px 12px 12px 0' }}>
@@ -450,18 +412,18 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Open Orders */}
+      {/* Unfilled Orders */}
       <div className="card animate-slide-in" style={{ animationDelay: '0.40s', marginBottom: 12 }}>
         <div className="card-header">
           Unfilled Orders ({openOrders.length})
-          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· pending on CLOB</span>
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· from Supabase · updated each cycle</span>
         </div>
         {openOrders.length > 0 ? (
           <div className="scroll-area">
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Order ID', 'Dir', 'Price', 'Size', 'Filled', 'Remaining', 'Expires'].map(h => (
+                  {['Order ID', 'Dir', 'Price', 'Size', 'Filled', 'Remaining', 'Type', 'Expires'].map(h => (
                     <th key={h} style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                       color: 'var(--muted)', textAlign: 'left',
@@ -477,19 +439,24 @@ export default function Dashboard() {
                       {order.id.slice(0, 18)}...
                     </td>
                     <td style={{ padding: '12px 12px 12px 0' }}>
-                      <span className={`tag ${order.direction.toLowerCase()}`}>{order.direction}</span>
+                      <span className={`tag ${order.direction.toLowerCase() === 'yes' ? 'yes' : 'no'}`}>
+                        {order.direction}
+                      </span>
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
                       {fmt(order.price * 100, 1)}¢
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      ${fmt(order.size)}
+                      ${fmt(order.original_size)}
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: 'var(--accent)' }}>
-                      ${fmt(order.filledSize)}
+                      ${fmt(order.size_matched)}
                     </td>
                     <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
-                      ${fmt(order.remainingSize)}
+                      ${fmt(order.size_remaining)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 11, color: 'var(--muted)' }}>
+                      {order.order_type}
                     </td>
                     <td style={{ padding: '12px 0 12px 0', fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--muted)' }}>
                       {order.expiration ? expiresIn(order.expiration) : 'GTC'}
@@ -504,14 +471,14 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Cycle history */}
+      {/* Cycle History */}
       <div className="card animate-slide-in" style={{ animationDelay: '0.45s' }}>
         <div className="card-header">Cycle History ({cycles.length})</div>
         <div className="scroll-area">
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Time', 'Scanned', 'Opps', 'Bets', 'Bankroll', 'P&L', 'ROI', 'Cost', 'Mode'].map(h => (
+                {['Time', 'Scanned', 'Opps', 'Bets', 'USDC', 'P&L', 'ROI', 'Cost', 'Mode'].map(h => (
                   <th key={h} style={{
                     fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                     color: 'var(--muted)', textAlign: 'left',
@@ -550,7 +517,7 @@ export default function Dashboard() {
       </div>
 
       <div style={{ marginTop: 24, textAlign: 'center', fontSize: 10, color: 'var(--muted)', letterSpacing: '0.1em' }}>
-        AGENDS CAPITAL · LIVE DATA FROM POLYMARKET API · AUTO-REFRESHES EVERY 60s
+        AGENDS CAPITAL · POSITIONS LIVE FROM POLYMARKET · ORDERS & CYCLES FROM SUPABASE · AUTO-REFRESHES EVERY 60s
       </div>
 
     </div>
