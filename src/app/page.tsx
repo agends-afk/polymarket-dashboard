@@ -266,6 +266,41 @@ export default function Dashboard() {
   const realWinRate = (wins + losses) > 0 ? (wins / (wins + losses) * 100) : null
   const totalRealPnL = tradeHistory.reduce((s, t) => s + t.pnl, 0)
 
+  const THEORETICAL_STOP_LOSS = 0.40
+  const stopLossAnalysis = {
+    wouldHaveTriggered: livePositions.filter(p => {
+      const drawdown = (p.currentPrice - p.initialValue / p.size) / (p.initialValue / p.size)
+      return drawdown <= -THEORETICAL_STOP_LOSS
+    }).map(p => ({
+      title: p.title,
+      entryPrice: p.initialValue / p.size,
+      currentPrice: p.currentPrice,
+      drawdown: (p.currentPrice - p.initialValue / p.size) / (p.initialValue / p.size),
+      savedUsdc: -(p.currentValue - p.initialValue), // positive = stop loss would have saved money
+    })),
+    closedAnalysis: tradeHistory.filter(t => t.status !== 'OPEN' && t.status !== 'PULLED' && t.costUsdc > 0).map(t => {
+      const avgEntry = t.costUsdc / (t.costUsdc / (t.costUsdc > 0 ? t.costUsdc : 1)) // simplified
+      const stopLossPrice = 0.60 // would trigger at 40% loss = price * 0.60 of entry
+      // If it was a loss, stop loss might have limited damage
+      // If it was a win, stop loss would have been irrelevant (price recovered)
+      return {
+        title: t.title,
+        status: t.status,
+        pnl: t.pnl,
+        stopLossImpact: t.status === 'WIN' ? 'no_trigger' as const :
+                        t.status === 'LOSS' ? 'would_have_triggered' as const : 'unknown' as const,
+        // For losses: stop loss at 40% would cap loss at 40% of cost
+        cappedLoss: t.status === 'LOSS' ? -(t.costUsdc * THEORETICAL_STOP_LOSS) : 0,
+        actualLoss: t.pnl,
+        saved: t.status === 'LOSS' ? t.pnl - (-(t.costUsdc * THEORETICAL_STOP_LOSS)) : 0, // negative = stop loss would have saved money
+      }
+    }),
+  }
+  const stopLossWouldHaveHelped = stopLossAnalysis.closedAnalysis.filter(t => t.saved < -0.01).length
+  const stopLossWouldHaveHurt = stopLossAnalysis.closedAnalysis.filter(t => t.stopLossImpact === 'no_trigger').length
+  const stopLossTotalSaved = stopLossAnalysis.closedAnalysis.reduce((s, t) => s + t.saved, 0)
+  const openPositionsAtRisk = stopLossAnalysis.wouldHaveTriggered.length
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
@@ -346,6 +381,20 @@ export default function Dashboard() {
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             {wins}W · {losses}L · {open} open · {pulled} pulled
+          </div>
+        </div>
+
+        <div className="card animate-slide-in" style={{ animationDelay: '0.13s' }}>
+          <div className="card-header">Stop Loss Tracker <span style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 400 }}>THEORETICAL · 40%</span></div>
+          <div className={`big-number ${stopLossTotalSaved < -0.01 ? 'positive' : stopLossTotalSaved > 0.01 ? 'negative' : 'neutral'}`}>
+            {stopLossTotalSaved < -0.01 ? `+$${fmt(-stopLossTotalSaved)}` : stopLossTotalSaved > 0.01 ? `-$${fmt(stopLossTotalSaved)}` : '—'}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+            {stopLossWouldHaveHelped > 0 && <span style={{ color: 'var(--accent)' }}>{stopLossWouldHaveHelped} helped</span>}
+            {stopLossWouldHaveHelped > 0 && stopLossWouldHaveHurt > 0 && ' · '}
+            {stopLossWouldHaveHurt > 0 && <span style={{ color: 'var(--accent3)' }}>{stopLossWouldHaveHurt} would miss</span>}
+            {openPositionsAtRisk > 0 && <span style={{ color: 'var(--accent2)' }}> · {openPositionsAtRisk} open at risk</span>}
+            {stopLossWouldHaveHelped === 0 && stopLossWouldHaveHurt === 0 && openPositionsAtRisk === 0 && 'Insufficient data'}
           </div>
         </div>
 
