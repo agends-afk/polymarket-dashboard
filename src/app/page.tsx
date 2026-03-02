@@ -64,6 +64,80 @@ interface OpenOrder {
   status: string
 }
 
+interface TradeRecord {
+  conditionId: string
+  title: string
+  outcome: string
+  url: string
+  buys: number
+  sells: number
+  costUsdc: number
+  proceedsUsdc: number
+  pnl: number
+  status: 'WIN' | 'LOSS' | 'OPEN' | 'PULLED'
+  lastActivity: number
+}
+
+async function fetchTradeHistory(): Promise<TradeRecord[]> {
+  try {
+    const res = await fetch(`https://data-api.polymarket.com/activity?user=${WALLET}&limit=500`)
+    if (!res.ok) return []
+    const data = await res.json()
+
+    // Group by conditionId
+    const grouped: Record<string, any[]> = {}
+    for (const d of data) {
+      if (!grouped[d.conditionId]) grouped[d.conditionId] = []
+      grouped[d.conditionId].push(d)
+    }
+
+    // Get current open position conditionIds to determine status
+    const posRes = await fetch(`https://data-api.polymarket.com/positions?user=${WALLET}&sizeThreshold=0`)
+    const posData = posRes.ok ? await posRes.json() : []
+    const openConditionIds = new Set(posData.filter((p: any) => parseFloat(p.curPrice) > 0).map((p: any) => p.conditionId))
+
+    return Object.entries(grouped).map(([conditionId, trades]) => {
+      const buys = trades.filter(t => t.side === 'BUY')
+      const sells = trades.filter(t => t.side === 'SELL')
+      const costUsdc = buys.reduce((s: number, t: any) => s + t.usdcSize, 0)
+      const proceedsUsdc = sells.reduce((s: number, t: any) => s + t.usdcSize, 0)
+      const pnl = proceedsUsdc - costUsdc
+      const lastActivity = Math.max(...trades.map(t => t.timestamp))
+      const sample = trades[0]
+
+      let status: TradeRecord['status']
+      if (openConditionIds.has(conditionId)) {
+        status = 'OPEN'
+      } else if (sells.length === 0) {
+        status = 'PULLED'
+      } else if (pnl >= 0) {
+        status = 'WIN'
+      } else {
+        status = 'LOSS'
+      }
+
+      // Filter out Trump/expired zero-value markets
+      return {
+        conditionId,
+        title: sample.title || '',
+        outcome: sample.outcome || '',
+        url: sample.slug ? `https://polymarket.com/event/${sample.slug}` : '',
+        buys: buys.length,
+        sells: sells.length,
+        costUsdc,
+        proceedsUsdc,
+        pnl,
+        status,
+        lastActivity,
+      }
+    })
+    .filter(t => !(t.status === 'PULLED' && t.costUsdc === 0))
+    .sort((a, b) => b.lastActivity - a.lastActivity)
+  } catch {
+    return []
+  }
+}
+
 function fmt(n: number, dec = 2) {
   return (n ?? 0).toFixed(dec)
 }
@@ -133,6 +207,8 @@ export default function Dashboard() {
   const [cycles, setCycles] = useState<Cycle[]>([])
   const [livePositions, setLivePositions] = useState<LivePosition[]>([])
   const [openOrders, setOpenOrders] = useState<OpenOrder[]>([])
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null)
+  const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
@@ -143,16 +219,22 @@ export default function Dashboard() {
     const [
       { data: cyclesData },
       { data: ordersData },
+      { data: balanceData },
       positions,
+      trades,
     ] = await Promise.all([
       supabase.from('cycles').select('*').order('created_at', { ascending: false }).limit(50),
       supabase.from('orders').select('*').order('expiration', { ascending: true }),
+      supabase.from('balance').select('usdc').eq('id', 1).single(),
       fetchLivePositions(),
+      fetchTradeHistory(),
     ])
 
     if (cyclesData) setCycles(cyclesData)
     if (ordersData) setOpenOrders(ordersData)
+    if (balanceData?.usdc) setUsdcBalance(balanceData.usdc)
     setLivePositions(positions)
+    setTradeHistory(trades)
     setLastRefresh(new Date())
     setLoading(false)
     if (isManual) setRefreshing(false)
@@ -175,7 +257,14 @@ export default function Dashboard() {
   const totalImpliedPnL = livePositions.reduce((s, p) => s + p.pnl, 0)
   const totalPositionValue = livePositions.reduce((s, p) => s + p.currentValue, 0)
   const totalInvested = livePositions.reduce((s, p) => s + p.initialValue, 0)
-  const usdcBalance = latest?.bankroll_usdc ?? 0
+  const displayBalance = usdcBalance ?? latest?.bankroll_usdc ?? 0
+
+  const wins = tradeHistory.filter(t => t.status === 'WIN').length
+  const losses = tradeHistory.filter(t => t.status === 'LOSS').length
+  const open = tradeHistory.filter(t => t.status === 'OPEN').length
+  const pulled = tradeHistory.filter(t => t.status === 'PULLED').length
+  const realWinRate = (wins + losses) > 0 ? (wins / (wins + losses) * 100) : null
+  const totalRealPnL = tradeHistory.reduce((s, t) => s + t.pnl, 0)
 
   if (loading) {
     return (
@@ -230,7 +319,7 @@ export default function Dashboard() {
         <div className="card animate-slide-in">
           <div className="card-header">USDC Balance</div>
           <div className={`big-number ${(latest?.pnl_usdc ?? 0) >= 0 ? 'positive' : 'negative'}`}>
-            ${fmt(usdcBalance)}
+            ${fmt(displayBalance)}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             <span style={{ color: (latest?.pnl_usdc ?? 0) >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
@@ -252,11 +341,11 @@ export default function Dashboard() {
 
         <div className="card animate-slide-in" style={{ animationDelay: '0.10s' }}>
           <div className="card-header">Win Rate</div>
-          <div className={`big-number ${winRate !== null && winRate >= 50 ? 'positive' : winRate !== null ? 'negative' : 'neutral'}`}>
-            {winRate !== null ? `${fmt(winRate, 0)}%` : '—'}
+          <div className={`big-number ${realWinRate !== null && realWinRate >= 50 ? 'positive' : realWinRate !== null ? 'negative' : 'neutral'}`}>
+            {realWinRate !== null ? `${fmt(realWinRate, 0)}%` : '—'}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-            {latest?.wins ?? 0}W · {latest?.losses ?? 0}L · {latest?.pending ?? 0}P
+            {wins}W · {losses}L · {open} open · {pulled} pulled
           </div>
         </div>
 
@@ -469,6 +558,66 @@ export default function Dashboard() {
           </div>
         ) : (
           <div style={{ color: 'var(--muted)', fontSize: 13 }}>No unfilled orders</div>
+        )}
+      </div>
+
+      {/* Trade History */}
+      <div className="card animate-slide-in" style={{ animationDelay: '0.48s', marginBottom: 12 }}>
+        <div className="card-header">
+          Trade History ({tradeHistory.length})
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>· live from Polymarket API · total P&L: <span style={{ color: totalRealPnL >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>{totalRealPnL >= 0 ? '+' : ''}${fmt(totalRealPnL)}</span></span>
+        </div>
+        {tradeHistory.length > 0 ? (
+          <div className="scroll-area">
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Market', 'Outcome', 'Cost', 'Proceeds', 'P&L', 'Status'].map(h => (
+                    <th key={h} style={{
+                      fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
+                      color: 'var(--muted)', textAlign: 'left',
+                      padding: '0 12px 10px 0', textTransform: 'uppercase'
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {tradeHistory.map((t) => (
+                  <tr key={t.conditionId} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: '12px 12px 12px 0', maxWidth: 280 }}>
+                      <a href={t.url} target="_blank" rel="noopener noreferrer"
+                         style={{ fontSize: 12, color: 'var(--text)', textDecoration: 'none', lineHeight: 1.4 }}>
+                        {t.title}
+                      </a>
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0' }}>
+                      <span className={`tag ${t.outcome.toLowerCase() === 'yes' ? 'yes' : 'no'}`}>
+                        {t.outcome}
+                      </span>
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      ${fmt(t.costUsdc)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace' }}>
+                      ${fmt(t.proceedsUsdc)}
+                    </td>
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, fontFamily: 'Space Mono, monospace', color: t.pnl >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
+                      {t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}
+                    </td>
+                    <td style={{ padding: '12px 0 12px 0' }}>
+                      <span className={`tag ${t.status.toLowerCase()}`} style={{
+                        color: t.status === 'WIN' ? 'var(--accent)' : t.status === 'LOSS' ? 'var(--accent3)' : t.status === 'PULLED' ? 'var(--accent2)' : 'var(--muted)'
+                      }}>
+                        {t.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>No trade history found</div>
         )}
       </div>
 
