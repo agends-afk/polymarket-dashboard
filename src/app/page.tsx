@@ -53,6 +53,7 @@ interface LivePosition {
 interface OpenOrder {
   id: string
   market_id: string
+  question: string
   direction: string
   price: number
   original_size: number
@@ -423,7 +424,7 @@ export default function Dashboard() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['Order ID', 'Dir', 'Price', 'Size', 'Filled', 'Remaining', 'Type', 'Expires'].map(h => (
+                  {['Market', 'Dir', 'Price', 'Size', 'Filled', 'Remaining', 'Type', 'Expires'].map(h => (
                     <th key={h} style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                       color: 'var(--muted)', textAlign: 'left',
@@ -435,8 +436,8 @@ export default function Dashboard() {
               <tbody>
                 {openOrders.map((order) => (
                   <tr key={order.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '12px 12px 12px 0', fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--muted)' }}>
-                      {order.id.slice(0, 18)}...
+                    <td style={{ padding: '12px 12px 12px 0', fontSize: 12, color: 'var(--text)', maxWidth: 280 }}>
+                      {order.question || order.id.slice(0, 18) + '...'}
                     </td>
                     <td style={{ padding: '12px 12px 12px 0' }}>
                       <span className={`tag ${order.direction.toLowerCase() === 'yes' ? 'yes' : 'no'}`}>
