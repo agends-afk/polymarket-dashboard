@@ -101,3 +101,23 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
+
+.th {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  text-align: left;
+  padding: 0 12px 10px 0;
+  text-transform: uppercase;
+}
+
+.td {
+  padding: 12px 12px 12px 0;
+  font-size: 12px;
+}
+
+.mono-cell {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+}

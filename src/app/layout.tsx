@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Agends Capital · Polymarket Bot',
+  title: 'Prophet Margin · Polymarket Bot',
   description: 'Live trading dashboard',
 }
 
