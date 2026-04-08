@@ -83,7 +83,7 @@ interface TradeRecord {
 
 async function fetchLivePositions(): Promise<LivePosition[]> {
   try {
-    const res = await fetch(`https://data-api.polymarket.com/positions?user=${WALLET}&sizeThreshold=0`)
+    const res = await fetch('/api/positions')
     if (!res.ok) return []
     const data = await res.json()
     return (data || []).map((p: any) => {
@@ -116,7 +116,7 @@ async function fetchLivePositions(): Promise<LivePosition[]> {
 
 async function fetchTradeHistory(): Promise<TradeRecord[]> {
   try {
-    const res = await fetch(`https://data-api.polymarket.com/activity?user=${WALLET}&limit=500`)
+    const res = await fetch('/api/activity')
     if (!res.ok) return []
     const data = await res.json()
 
@@ -126,7 +126,7 @@ async function fetchTradeHistory(): Promise<TradeRecord[]> {
       grouped[d.conditionId].push(d)
     }
 
-    const posRes = await fetch(`https://data-api.polymarket.com/positions?user=${WALLET}&sizeThreshold=0`)
+    const posRes = await fetch('/api/positions')
     const posData = posRes.ok ? await posRes.json() : []
     const openConditionIds = new Set(
       posData.filter((p: any) => parseFloat(p.curPrice) > 0).map((p: any) => p.conditionId)
