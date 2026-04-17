@@ -10,7 +10,17 @@ export async function GET() {
     )
     if (!res.ok) return NextResponse.json([], { status: res.status })
     const data = await res.json()
-    return NextResponse.json(data)
+
+    // Filter out resolved positions: price at 0 or 1 means settled
+    const active = (data || []).filter((p: any) => {
+      const size = parseFloat(p.size || 0)
+      const price = parseFloat(p.curPrice || 0)
+      if (size <= 0) return false
+      if (price <= 0.005 || price >= 0.995) return false
+      return true
+    })
+
+    return NextResponse.json(active)
   } catch {
     return NextResponse.json([], { status: 500 })
   }

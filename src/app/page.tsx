@@ -108,7 +108,7 @@ async function fetchLivePositions(): Promise<LivePosition[]> {
         endDate: p.endDate || '',
         url: p.slug ? `https://polymarket.com/event/${p.slug}` : '',
       }
-    }).filter((p: LivePosition) => p.size > 0 && !(p.currentPrice === 0 && new Date(p.endDate) < new Date()))
+    }).filter((p: LivePosition) => p.size > 0)
   } catch {
     return []
   }
