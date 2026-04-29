@@ -108,7 +108,9 @@ async function fetchLivePositions(): Promise<LivePosition[]> {
         endDate: p.endDate || '',
         url: p.slug ? `https://polymarket.com/event/${p.slug}` : '',
       }
-    }).filter((p: LivePosition) => p.size > 0)
+    })
+    // Live positions card shows only currently-tradeable (non-resolved) bets.
+    .filter((p: LivePosition) => p.size > 0 && p.currentPrice > 0.005 && p.currentPrice < 0.995)
   } catch {
     return []
   }
@@ -126,26 +128,58 @@ async function fetchTradeHistory(): Promise<TradeRecord[]> {
       grouped[d.conditionId].push(d)
     }
 
+    // /api/positions now returns ALL positions including resolved (curPrice 0 or 1),
+    // so we can attribute redemption P&L instead of treating wins/losses as PULLED.
     const posRes = await fetch('/api/positions')
     const posData = posRes.ok ? await posRes.json() : []
-    const openConditionIds = new Set(
-      posData.filter((p: any) => parseFloat(p.curPrice) > 0).map((p: any) => p.conditionId)
-    )
+    type Pos = { size: number; cur: number; avg: number }
+    const posByCid: Record<string, Pos> = {}
+    for (const p of posData) {
+      const size = parseFloat(p.size || 0)
+      const cur = parseFloat(p.curPrice || 0)
+      const avg = parseFloat(p.avgPrice || 0)
+      if (size > 0) posByCid[p.conditionId] = { size, cur, avg }
+    }
 
     return Object.entries(grouped).map(([conditionId, trades]) => {
       const buys = trades.filter(t => t.side === 'BUY')
       const sells = trades.filter(t => t.side === 'SELL')
       const costUsdc = buys.reduce((s: number, t: any) => s + t.usdcSize, 0)
       const proceedsUsdc = sells.reduce((s: number, t: any) => s + t.usdcSize, 0)
-      const pnl = proceedsUsdc - costUsdc
       const lastActivity = Math.max(...trades.map(t => t.timestamp))
       const sample = trades[0]
+      const pos = posByCid[conditionId]
 
+      // Status priority:
+      //   1. position still tradeable (0.005 < cur < 0.995) → OPEN
+      //   2. position resolved YES on this side (cur >= 0.995) → WIN (redemption)
+      //   3. position resolved NO on this side (cur <= 0.005) → LOSS
+      //   4. no position record + has SELL trades → realised WIN/LOSS from sells
+      //   5. no position record + no sells → PULLED (limit order never filled, or
+      //      redeemed-and-cleared — both produce no cash to attribute)
       let status: TradeRecord['status']
-      if (openConditionIds.has(conditionId)) status = 'OPEN'
-      else if (sells.length === 0) status = 'PULLED'
-      else if (pnl >= 0) status = 'WIN'
-      else status = 'LOSS'
+      let pnl: number
+      let effectiveProceeds = proceedsUsdc
+
+      if (pos && pos.cur > 0.005 && pos.cur < 0.995) {
+        status = 'OPEN'
+        pnl = pos.size * pos.cur - pos.size * pos.avg
+      } else if (pos && pos.cur >= 0.995) {
+        status = 'WIN'
+        // Redemption pays $1.00/share. Add to any prior partial sells.
+        effectiveProceeds = proceedsUsdc + pos.size * 1.0
+        pnl = effectiveProceeds - costUsdc
+      } else if (pos && pos.cur <= 0.005) {
+        status = 'LOSS'
+        pnl = proceedsUsdc - costUsdc
+      } else if (sells.length > 0) {
+        const realised = proceedsUsdc - costUsdc
+        status = realised >= 0 ? 'WIN' : 'LOSS'
+        pnl = realised
+      } else {
+        status = 'PULLED'
+        pnl = proceedsUsdc - costUsdc
+      }
 
       return {
         conditionId,
@@ -155,7 +189,7 @@ async function fetchTradeHistory(): Promise<TradeRecord[]> {
         buys: buys.length,
         sells: sells.length,
         costUsdc,
-        proceedsUsdc,
+        proceedsUsdc: effectiveProceeds,
         pnl,
         status,
         lastActivity,
@@ -271,6 +305,12 @@ export default function Dashboard() {
   const realWinRate = (wins + losses) > 0 ? (wins / (wins + losses) * 100) : null
   const realisedPnL = tradeHistory.filter(t => t.status !== 'OPEN').reduce((s, t) => s + t.pnl, 0)
   const totalPnL = realisedPnL + totalUnrealisedPnL
+
+  // Trade history rendering: every open bet, plus the 20 most recent closed bets.
+  const CLOSED_HISTORY_LIMIT = 20
+  const openTradeRows = tradeHistory.filter(t => t.status === 'OPEN')
+  const closedTradeRows = tradeHistory.filter(t => t.status !== 'OPEN')
+  const tradeRowsToShow = [...openTradeRows, ...closedTradeRows.slice(0, CLOSED_HISTORY_LIMIT)]
 
   // Costs
   const totalCost = cycles.reduce((s, c) => s + (c.cost_per_cycle_usd || 0), 0)
@@ -557,10 +597,10 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Trade History */}
+      {/* Trade History — all open bets, plus the 20 most recent closed bets */}
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-header">
-          Trade History ({tradeHistory.length})
+          Trade History ({openTradeRows.length} open / {closedTradeRows.length} closed)
           <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>
             realised P&L:{' '}
             <span style={{ color: realisedPnL >= 0 ? 'var(--accent)' : 'var(--accent3)' }}>
@@ -579,7 +619,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {tradeHistory.map((t) => (
+                {tradeRowsToShow.map((t) => (
                   <tr key={t.conditionId} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td className="td" style={{ maxWidth: 280 }}>
                       <a href={t.url} target="_blank" rel="noopener noreferrer"
